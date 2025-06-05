@@ -243,19 +243,41 @@ const IndexContent = () => {
       setIsUploading(true);
       setUploadProgress(0);
 
-      // Upload file to Supabase Storage
+      // Upload file to Supabase Storage with progress tracking
       const fileExt = selectedFile.name.split('.').pop();
       const fileName = `${Math.random()}.${fileExt}`;
       const filePath = `${user?.id}/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
+      // Get the upload URL
+      const { data, error: signedURLError } = await supabase.storage
         .from('songs')
-        .upload(filePath, selectedFile);
+        .createSignedUploadUrl(filePath);
 
-      if (uploadError) {
-        console.error('Storage upload error:', uploadError);
-        throw uploadError;
-      }
+      if (signedURLError) throw signedURLError;
+      if (!data) throw new Error('No signed URL received');
+
+      // Upload the file with progress tracking
+      await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = (event.loaded / event.total) * 100;
+            setUploadProgress(percent);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            resolve(xhr.response);
+          } else {
+            reject(new Error('Upload failed'));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Upload failed'));
+        xhr.open('PUT', data.signedUrl);
+        xhr.send(selectedFile);
+      });
 
       // Get the public URL
       const { data: { publicUrl } } = supabase.storage
@@ -289,6 +311,7 @@ const IndexContent = () => {
       toast.error('Failed to upload song');
     } finally {
       setIsUploading(false);
+      setUploadProgress(0);
       setSelectedFile(null);
       setIsUploadModalOpen(false);
     }

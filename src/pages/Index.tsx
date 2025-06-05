@@ -248,41 +248,14 @@ const IndexContent = () => {
       const fileName = `${Math.random()}.${fileExt}`;
       const filePath = `${user?.id}/${fileName}`;
 
-      // Create a signed URL for upload
-      const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('songs')
-        .createSignedUploadUrl(filePath);
+        .upload(filePath, selectedFile);
 
-      if (signedUrlError) {
-        console.error('Error getting signed URL:', signedUrlError);
-        throw signedUrlError;
+      if (uploadError) {
+        console.error('Storage upload error:', uploadError);
+        throw uploadError;
       }
-
-      // Upload using XMLHttpRequest to track progress
-      await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            const percent = (event.loaded / event.total) * 100;
-            setUploadProgress(Math.round(percent));
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status === 200) {
-            resolve(xhr.response);
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
-          }
-        };
-
-        xhr.onerror = () => {
-          reject(new Error('Upload failed'));
-        };
-
-        xhr.open('PUT', signedUrlData.signedUrl);
-        xhr.send(selectedFile);
-      });
 
       // Get the public URL
       const { data: { publicUrl } } = supabase.storage
@@ -318,7 +291,6 @@ const IndexContent = () => {
       setIsUploading(false);
       setSelectedFile(null);
       setIsUploadModalOpen(false);
-      setUploadProgress(0);
     }
   };
 
@@ -499,7 +471,31 @@ const IndexContent = () => {
 
   const deleteSong = async (songId: string, songUrl: string) => {
     try {
-      // Delete from database
+      // First update the UI to remove the song from all playlists
+      setPlaylists(prevPlaylists => 
+        prevPlaylists.map(playlist => ({
+          ...playlist,
+          songs: playlist.songs.filter(id => id !== songId)
+        }))
+      );
+
+      // Update local songs state
+      setSongs(prev => prev.filter(song => song.id !== songId));
+
+      // If the deleted song was the current song, stop playback
+      if (currentSongIndex !== -1 && songs[currentSongIndex]?.id === songId) {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          setIsPlaying(false);
+        }
+        setCurrentSongIndex(-1);
+      }
+      // If a song before the current one was deleted, adjust the index
+      else if (currentSongIndex !== -1 && songs.findIndex(s => s.id === songId) < currentSongIndex) {
+        setCurrentSongIndex(currentSongIndex - 1);
+      }
+
+      // Then delete from database
       const { error: dbError } = await supabase
         .from('songs')
         .delete()
@@ -517,27 +513,19 @@ const IndexContent = () => {
         if (storageError) throw storageError;
       }
 
-      // Update local state
-      setSongs(prev => prev.filter(song => song.id !== songId));
-
-      // If the deleted song was the current song, stop playback
-      if (currentSongIndex !== -1 && songs[currentSongIndex]?.id === songId) {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        }
-        setCurrentSongIndex(-1);
-      }
-      // If a song before the current one was deleted, adjust the index
-      else if (currentSongIndex !== -1 && songs.findIndex(s => s.id === songId) < currentSongIndex) {
-        setCurrentSongIndex(currentSongIndex - 1);
-      }
-      // If a song after the current one was deleted, no index adjustment needed
-
       toast.success('Song deleted successfully');
     } catch (error) {
       console.error('Error deleting song:', error);
       toast.error('Failed to delete song');
+      
+      // If there's an error, revert the UI changes
+      setPlaylists(prevPlaylists => 
+        prevPlaylists.map(playlist => ({
+          ...playlist,
+          songs: [...playlist.songs]
+        }))
+      );
+      setSongs(prev => [...prev]);
     }
   };
 
